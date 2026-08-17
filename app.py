@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -16,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from data_loader import load_radioml  # noqa: E402
-from inference import predict_signal  # noqa: E402
+from inference import predict_signal, predict_with_bundles  # noqa: E402
 
 
 DEFAULT_DATASET = os.getenv(
@@ -28,6 +29,25 @@ DEFAULT_DATASET = os.getenv(
 def cached_dataset(path: str) -> dict:
     """Keep the large read-only dataset in memory between Streamlit reruns."""
     return load_radioml(path)
+
+
+@st.cache_data
+def bundled_samples() -> dict:
+    """Load the small signal gallery shipped with the repository."""
+    archive = np.load(PROJECT_ROOT / "demo" / "sample_signals.npz")
+    dataset = {}
+    for signal, modulation, snr in zip(
+        archive["signals"], archive["modulations"], archive["snrs"]
+    ):
+        dataset.setdefault((str(modulation), int(snr)), []).append(signal)
+    return {key: np.stack(value) for key, value in dataset.items()}
+
+
+@st.cache_resource
+def bundled_models() -> tuple[dict, dict]:
+    classifier = joblib.load(PROJECT_ROOT / "demo" / "demo_classifier.joblib")
+    anomaly = joblib.load(PROJECT_ROOT / "demo" / "demo_anomaly_detector.joblib")
+    return classifier, anomaly
 
 
 def signal_figure(iq_signal: np.ndarray) -> plt.Figure:
@@ -66,21 +86,42 @@ def main() -> None:
     st.title("RadioML Explorer")
     st.caption("I/Q features, modulation classification, and anomaly detection")
 
-    dataset_path = st.sidebar.text_input("RadioML pickle path", value=DEFAULT_DATASET)
-    path = Path(dataset_path).expanduser()
-    if not path.is_file():
-        st.error("Dataset file not found. Update the path in the sidebar.")
-        st.stop()
-
-    dataset = cached_dataset(str(path))
+    source = st.sidebar.radio(
+        "Signal source", ["Bundled signal gallery", "Full RadioML dataset"]
+    )
+    demo_mode = source == "Bundled signal gallery"
+    if demo_mode:
+        dataset = bundled_samples()
+        st.info(
+            "Demo mode uses 33 representative signals and the compact 2.4 MB model. "
+            "Select the full dataset in the sidebar to use locally rebuilt artifacts."
+        )
+    else:
+        dataset_path = st.sidebar.text_input("RadioML pickle path", value=DEFAULT_DATASET)
+        path = Path(dataset_path).expanduser()
+        if not path.is_file():
+            st.error("Dataset file not found. Update the path in the sidebar.")
+            st.stop()
+        dataset = cached_dataset(str(path))
     modulations = sorted({modulation for modulation, _ in dataset})
     modulation = st.sidebar.selectbox("True modulation", modulations, index=modulations.index("QPSK"))
     available_snrs = sorted(snr for mod, snr in dataset if mod == modulation)
     snr = st.sidebar.selectbox("SNR (dB)", available_snrs, index=len(available_snrs) - 1)
-    sample_index = st.sidebar.slider("Sample index", 0, len(dataset[(modulation, snr)]) - 1, 0)
+    sample_count = len(dataset[(modulation, snr)])
+    if sample_count == 1:
+        sample_index = 0
+        st.sidebar.caption("One bundled example is available for this selection.")
+    else:
+        sample_index = st.sidebar.slider("Sample index", 0, sample_count - 1, 0)
 
     iq_signal = dataset[(modulation, snr)][sample_index]
-    result = predict_signal(iq_signal, snr)
+    if demo_mode:
+        classifier_bundle, anomaly_bundle = bundled_models()
+        result = predict_with_bundles(
+            iq_signal, snr, classifier_bundle, anomaly_bundle
+        )
+    else:
+        result = predict_signal(iq_signal, snr)
 
     st.subheader("Selected signal")
     st.pyplot(signal_figure(iq_signal), clear_figure=True)
@@ -111,7 +152,8 @@ def main() -> None:
 
     st.caption(
         "Confidence is the Random Forest's maximum class probability. "
-        "The anomaly score is positive for more-normal signals and negative for anomalies."
+        "The anomaly score is positive for more-normal signals and negative for anomalies. "
+        "Charts below report the full 100-tree model, not the compact dashboard model."
     )
 
 

@@ -42,22 +42,44 @@ def predict_signal(iq_signal: np.ndarray, snr: float) -> dict:
         raise ValueError("snr must be a finite number.")
 
     classifier_bundle, anomaly_bundle = load_models()
+    return predict_with_bundles(iq_signal, snr, classifier_bundle, anomaly_bundle)
+
+
+def predict_with_bundles(
+    iq_signal: np.ndarray,
+    snr: float,
+    classifier_bundle: dict,
+    anomaly_bundle: dict,
+) -> dict:
+    """Run inference with explicitly supplied classifier and anomaly artifacts."""
+    signal = np.asarray(iq_signal)
+    if signal.shape != (2, 128):
+        raise ValueError(f"Expected iq_signal shape (2, 128), received {signal.shape}.")
+    if not np.isfinite(signal).all():
+        raise ValueError("iq_signal contains NaN or infinite values.")
+    if not np.isfinite(snr):
+        raise ValueError("snr must be a finite number.")
+
     feature_values = extract_signal_features(signal)
     feature_names = classifier_bundle["feature_names"]
-    if feature_names != anomaly_bundle["feature_names"]:
-        raise ValueError("Classifier and anomaly detector expect different features.")
-    feature_row = pd.DataFrame(
+    classifier_row = pd.DataFrame(
         [[feature_values[name] for name in feature_names]], columns=feature_names
     )
 
-    classifier = classifier_bundle["random_forest"]
-    predicted_modulation = str(classifier.predict(feature_row)[0])
-    probabilities = classifier.predict_proba(feature_row)[0]
+    classifier = classifier_bundle.get("random_forest", classifier_bundle.get("model"))
+    if classifier is None:
+        raise ValueError("Classifier artifact does not contain a supported model.")
+    predicted_modulation = str(classifier.predict(classifier_row)[0])
+    probabilities = classifier.predict_proba(classifier_row)[0]
     confidence = float(np.max(probabilities))
 
+    anomaly_names = anomaly_bundle["feature_names"]
+    anomaly_row = pd.DataFrame(
+        [[feature_values[name] for name in anomaly_names]], columns=anomaly_names
+    )
     detector = anomaly_bundle["detector"]
-    anomaly_score = float(detector.decision_function(feature_row)[0])
-    is_anomaly = bool(detector.predict(feature_row)[0] == -1)
+    anomaly_score = float(detector.decision_function(anomaly_row)[0])
+    is_anomaly = bool(detector.predict(anomaly_row)[0] == -1)
 
     return {
         "predicted_modulation": predicted_modulation,

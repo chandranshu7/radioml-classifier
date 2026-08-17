@@ -1,0 +1,10 @@
+{
+  "purpose": "Compact bundled demo; not the primary reported model",
+  "feature_count": 12,
+  "n_estimators": 30,
+  "max_depth": 12,
+  "overall_accuracy": 0.4909545454545455,
+  "accuracy_snr_ge_6": 0.7726623376623377,
+  "size_mb": 2.4175281524658203,
+  "scikit_learn_version": "1.6.1"
+}
